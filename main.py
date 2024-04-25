@@ -1,5 +1,6 @@
 import re
 import apache_beam as beam
+import pyarrow
 from apache_beam.io import ReadFromText
 from apache_beam.io.textio import WriteToText
 from apache_beam.options.pipeline_options import PipelineOptions
@@ -17,6 +18,14 @@ colunas_dengue = ['id',
                   'latitude',
                   'longitude']
 
+
+
+schema = [('uf', pyarrow.string()),
+          ('ano', pyarrow.int32()),
+          ('mes', pyarrow.int32()),
+          ('chuvas', pyarrow.float32()),
+          ('dengue', pyarrow.float32())
+          ]
 
 def texto_para_lista(elemento, delimitador='|'):
     """
@@ -108,6 +117,19 @@ def descompactar_elementos(elemento):
     uf, ano, mes = chave.split('-')
     return uf, ano, mes, str(chuva), str(dengue)
 
+def descompactar_elementos_parquet(elemento):
+   """
+   Receber uma tupla ('CE-2015-11', {'chuvas': [0.4], 'dengue': [21.0]})
+   Retornar um dicionário {'uf': 'CE', 'ano': 2015, 'mes': 11, 'chuvas': 0.4, 'dengue': 21.0}
+   """
+   chave, dados = elemento
+   chuva = dados['chuvas'][0]
+   dengue = dados['dengue'][0]
+   uf, ano, mes = chave.split('-')
+   chaves = ['uf', 'ano', 'mes', 'chuvas', 'dengue']
+   resultado = dict(zip(chaves, [uf, int(ano), int(mes), chuva, dengue]))
+   return resultado
+
 def preparar_csv(elemento, delimitador=';'):
     """
     Receber uma tupla ('CE', '2015', '12', '7.6', '29.0')
@@ -144,22 +166,32 @@ chuvas = (
     #| "Mostrar resultados de chuvas" >> beam.Map(print)
 )
 
+# Usado para imprimir o arquivo de saída em csv
+# resultado = (
+#     #(chuvas, dengue)
+#     #| "Empilha as pcollections" >> beam.Flatten()
+#     #| "Agrupa as pcollections" >> beam.GroupByKey()
+#     ({'chuvas':chuvas, 'dengue':dengue})
+#     | "Mesclar pcollections" >> beam.CoGroupByKey()
+#     | "Filtrar dados vazios" >> beam.Filter(filtra_campos_vazios)
+#     | "Descompactar elementos" >> beam.Map(descompactar_elementos)
+#     | "Preparar CSV" >> beam.Map(preparar_csv)
+#     # | "Mostrar resultados da união" >> beam.Map(print)
 
+#  )
 
 resultado = (
-    #(chuvas, dengue)
-    #| "Empilha as pcollections" >> beam.Flatten()
-    #| "Agrupa as pcollections" >> beam.GroupByKey()
-    ({'chuvas':chuvas, 'dengue':dengue})
-    | "Mesclar pcollections" >> beam.CoGroupByKey()
-    | "Filtrar dados vazios" >> beam.Filter(filtra_campos_vazios)
-    | "Descompactar elementos" >> beam.Map(descompactar_elementos)
-    | "Preparar CSV" >> beam.Map(preparar_csv)
-    # | "Mostrar resultados da união" >> beam.Map(print)
+    ({'chuvas': chuvas, 'dengue': dengue})
+    | 'Mesclar pcols ' >> beam.CoGroupByKey()
+    | 'Filtrar dados vazios ' >> beam.Filter(filtra_campos_vazios)
+    | 'Descompactar elementos ' >> beam.Map(descompactar_elementos_parquet)
+    | 'Persistir em parquet ' >> beam.io.WriteToParquet('resultado_parquet',
+        file_name_suffix=".parquet",
+        schema=pyarrow.schema(schema))
+)
 
- )
-
-header='UF;ANO;MES;CHUVA;DENGUE'
-resultado | 'Criar arquivo CSV' >> WriteToText('resultado',file_name_suffix='.csv',header=header)
+# Usado para imprimir o arquivo de saída em csv
+# header='UF;ANO;MES;CHUVA;DENGUE'
+# resultado | 'Criar arquivo CSV' >> WriteToText('resultado',file_name_suffix='.csv',header=header)
 
 pipeline.run()
